@@ -7,7 +7,6 @@ Licensed under the MIT License
 
 import asyncio
 import json
-import yaml
 import logging
 import platform
 import sys
@@ -16,7 +15,6 @@ import warnings
 from pathlib import Path
 from typing import Optional, Union
 
-from graphrag.config import create_graphrag_config
 from graphrag.index import PipelineConfig, create_pipeline_config
 from graphrag.index.cache import NoopPipelineCache
 from graphrag.index.progress import (
@@ -36,13 +34,15 @@ from graphrag.index.graph.extractors.graph.prompts import GRAPH_EXTRACTION_PROMP
 from graphrag.index.graph.extractors.summarize.prompts import SUMMARIZE_PROMPT
 from graphrag.index.init_content import INIT_DOTENV, INIT_YAML
 
+from graphrag_api.common import BaseGraph
+
 # Ignore warnings from numba
 warnings.filterwarnings("ignore", message=".*NumbaDeprecationWarning.*")
 
 log = logging.getLogger(__name__)
 
 
-class GraphRagIndexer:
+class GraphRagIndexer(BaseGraph):
     def __init__(
         self,
         root: str = ".",
@@ -68,6 +68,7 @@ class GraphRagIndexer:
         self.dryrun = dryrun
         self.init = init
         self.overlay_defaults = overlay_defaults
+        self.cli = False
 
     @staticmethod
     def redact(input: dict) -> str:
@@ -190,6 +191,9 @@ class GraphRagIndexer:
         else:
             progress_reporter.success("All workflows completed successfully.")
 
+        if self.cli:
+            sys.exit(1 if encountered_errors else 0)
+
     @staticmethod
     def _initialize_project_at(path: str, reporter: ProgressReporter) -> None:
         """Initialize the project at the given path."""
@@ -278,51 +282,20 @@ class GraphRagIndexer:
         return result
 
     @staticmethod
-    def _read_config_parameters(
-        root: str, config: Optional[str], reporter: ProgressReporter
-    ):
-        _root = Path(root)
-        settings_yaml = (
-            Path(config)
-            if config and Path(config).suffix in [".yaml", ".yml"]
-            else _root / "settings.yaml"
-        )
-        settings_json = (
-            Path(config)
-            if config and Path(config).suffix in [".json"]
-            else _root / "settings.json"
-        )
-        if settings_yaml.exists():
-            reporter.success(f"Reading settings from {settings_yaml}")
-            with settings_yaml.open("rb") as file:
-                data = yaml.safe_load(file.read().decode(encoding="utf-8", errors="strict"))
-                result = create_graphrag_config(data, root)
-        elif settings_json.exists():
-            reporter.success(f"Reading settings from {settings_json}")
-            with settings_json.open("rb") as file:
-                data = json.loads(file.read().decode(encoding="utf-8", errors="strict"))
-                result = create_graphrag_config(data, root)
-        else:
-            msg = (
-                f"Cannot find any configuration files at {settings_json} or "
-                f"{settings_yaml}"
-            )
-            raise ValueError(msg)
-        return result
-
-    @staticmethod
     def _enable_logging(root: str, run_id: str, verbose: bool) -> None:
         """Enable logging to file and console."""
-        root = Path(root)
-        log_file = root / "logs" / f"{run_id}.log"
+        log_file = Path(root) / "output" / run_id / "reports" / "indexing-engine.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        fmt = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
-        level = logging.DEBUG if verbose else logging.INFO
-        logging.basicConfig(level=level, format=fmt)
-        fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setFormatter(logging.Formatter(fmt))
-        logging.getLogger().addHandler(fh)
-        log.info("logging enabled")
+
+        log_file.touch(exist_ok=True)
+
+        logging.basicConfig(
+            filename=str(log_file),
+            filemode="a",
+            format="%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s",
+            datefmt="%H:%M:%S",
+            level=logging.DEBUG if verbose else logging.INFO,
+        )
 
     @staticmethod
     def _get_progress_reporter(

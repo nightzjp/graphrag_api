@@ -163,7 +163,7 @@ search_runner.remove_sources(search_runner.run_local_search(query="What are the 
 
 ## 致谢
 
-此项目基于 [GraphRag](https://github.com/GraphRag/GraphRag) 库。特别感谢原项目的贡献者。
+此项目基于 [GraphRag](https://github.com/microsoft/graphrag/) 库。特别感谢原项目的贡献者。
 
 ---
 

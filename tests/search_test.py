@@ -88,8 +88,8 @@ if __name__ == "__main__":
 
     match args.method:
         case SearchType.LOCAL:
-            search_runner.run_local_search(query=args.query[0])
+            search_runner.run_local_search(query=args.query[0], streaming=False)
         case SearchType.GLOBAL:
-            search_runner.run_global_search(query=args.query[0])
+            search_runner.run_global_search(query=args.query[0], streaming=False)
         case _:
             raise ValueError(INVALID_METHOD_ERROR)

@@ -4,11 +4,13 @@ Licensed under the MIT License
 
 基于 graphrag\\query\\cli.py 修改
 """
-
-import os
+import asyncio
 import re
+import sys
 from pathlib import Path
 from typing import cast
+from pydantic import validate_call
+from collections.abc import AsyncGenerator
 
 import pandas as pd
 
@@ -29,6 +31,7 @@ from graphrag.query.indexer_adapters import (
     read_indexer_reports,
     read_indexer_text_units,
 )
+from graphrag.query.api import _reformat_context_data
 
 from graphrag_api.common import BaseGraph
 
@@ -52,6 +55,45 @@ class SearchRunner(BaseGraph):
         self.config = None
         self.__local_agent = self.__get__local_agent()
         self.__global_agent = self.__get__global_agent()
+
+    @staticmethod
+    @validate_call(config={"arbitrary_types_allowed": True})
+    async def search(search_agent, query):
+        """非流式搜索"""
+        result = await search_agent.asearch(query=query)
+        return result.response
+
+    @staticmethod
+    @validate_call(config={"arbitrary_types_allowed": True})
+    async def search_streaming(search_agent, query) -> AsyncGenerator:
+        """流式搜索"""
+        search_result = search_agent.astream_search(query=query)
+        context_data = None
+        get_context_data = True
+        async for stream_chunk in search_result:
+            if get_context_data:
+                context_data = _reformat_context_data(stream_chunk)
+                yield context_data
+                get_context_data = False
+            else:
+                yield stream_chunk
+
+    async def run_streaming_search(self, search_agent, query):
+        full_response = ""
+        context_data = None
+        get_context_data = True
+        async for stream_chunk in self.search_streaming(
+            search_agent=search_agent, query=query
+        ):
+            if get_context_data:
+                context_data = stream_chunk
+                get_context_data = False
+            else:
+                full_response += stream_chunk
+                print(stream_chunk, end="")  # noqa: T201
+                sys.stdout.flush()  # flush output buffer to display text immediately
+        print()  # noqa: T201
+        return full_response, context_data
 
     @staticmethod
     def __get_embedding_description_store(
@@ -130,13 +172,15 @@ class SearchRunner(BaseGraph):
             response_type=self.response_type,
         )
 
-    def run_global_search(self, query):
+    def run_global_search(self, query, streaming=False):
         """Run a global search with the given query."""
 
-        result = self.__global_agent.search(query=query)
+        if streaming:
+            return asyncio.run(
+                self.run_streaming_search(search_agent=self.__global_agent, query=query)
+            )
 
-        reporter.success(f"Global Search Response: {result.response}")
-        return result.response
+        return asyncio.run(self.search(search_agent=self.__global_agent, query=query))
 
     def __get__local_agent(self):
         """获取local搜索引擎"""
@@ -197,12 +241,14 @@ class SearchRunner(BaseGraph):
             response_type=self.response_type,
         )
 
-    def run_local_search(self, query):
+    def run_local_search(self, query, streaming=False):
         """Run a local search with the given query."""
 
-        result = self.__local_agent.search(query=query)
-        reporter.success(f"Local Search Response: {result.response}")
-        return result.response
+        if streaming:
+            return asyncio.run(
+                self.run_streaming_search(search_agent=self.__local_agent, query=query)
+            )
+        return asyncio.run(self.search(search_agent=self.__local_agent, query=query))
 
     def _configure_paths_and_settings(
         self,
@@ -223,7 +269,11 @@ class SearchRunner(BaseGraph):
         output = Path(root) / "output"
         # use the latest data-run folder
         if output.exists():
-            folders = sorted(output.iterdir(), key=os.path.getmtime, reverse=True)
+            expr = re.compile(r"\d{8}-\d{6}")
+            filtered = [
+                f for f in output.iterdir() if f.is_dir() and expr.match(f.name)
+            ]
+            folders = sorted(filtered, key=lambda f: f.name, reverse=True)
             if len(folders) > 0:
                 folder = folders[0]
                 return str((folder / "artifacts").absolute())

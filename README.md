@@ -146,8 +146,8 @@ from graphrag_api.search import SearchRunner
 
 search_runner = SearchRunner(root_dir="rag")
 
-search_runner.run_local_search(query="What are the top themes in this story?")
-search_runner.run_global_search(query="What are the top themes in this story?")
+search_runner.run_local_search(query="What are the top themes in this story?", streaming=False)
+search_runner.run_global_search(query="What are the top themes in this story?", streaming=False)
 
 # 对于输出的结果可能带有一些特殊字符，可以采用以下函数去除特殊字符或自行处理。
 search_runner.remove_sources(search_runner.run_local_search(query="What are the top themes in this story?"))

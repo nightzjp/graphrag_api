@@ -15,11 +15,13 @@ from collections.abc import AsyncGenerator
 import pandas as pd
 
 from graphrag.config import GraphRagConfig
+from graphrag.config.resolve_timestamp_path import resolve_timestamp_path
 from graphrag.index.progress import PrintProgressReporter
 from graphrag.model.entity import Entity
 from graphrag.query.input.loaders.dfs import (
     store_entity_semantic_embeddings,
 )
+from graphrag.query.structured_search.base import SearchResult
 from graphrag.vector_stores import VectorStoreFactory, VectorStoreType
 from graphrag.vector_stores.lancedb import LanceDBVectorStore
 
@@ -60,8 +62,10 @@ class SearchRunner(BaseGraph):
     @validate_call(config={"arbitrary_types_allowed": True})
     async def search(search_agent, query):
         """非流式搜索"""
-        result = await search_agent.asearch(query=query)
-        return result.response
+        result: SearchResult = await search_agent.asearch(query=query)
+        response = result.response
+        context_data = _reformat_context_data(result.context_data)  # type: ignore
+        return response, context_data
 
     @staticmethod
     @validate_call(config={"arbitrary_types_allowed": True})
@@ -217,6 +221,10 @@ class SearchRunner(BaseGraph):
         entities = read_indexer_entities(
             final_nodes, final_entities, self.community_level
         )
+        base_dir = Path(str(root_dir)) / config.storage.base_dir
+        resolved_base_dir = resolve_timestamp_path(base_dir)
+        lancedb_dir = resolved_base_dir / "lancedb"
+        vector_store_args.update({"db_uri": str(lancedb_dir)})
         description_embedding_store = self.__get_embedding_description_store(
             entities=entities,
             vector_store_type=vector_store_type,
@@ -256,12 +264,13 @@ class SearchRunner(BaseGraph):
         root_dir: str | None,
         config_dir: str | None,
     ) -> tuple[str, str | None, GraphRagConfig]:
+        config = self._create_graphrag_config(root_dir, config_dir)
         if data_dir is None and root_dir is None:
             msg = "Either data_dir or root_dir must be provided."
             raise ValueError(msg)
         if data_dir is None:
-            data_dir = self._infer_data_dir(cast(str, root_dir))
-        config = self._create_graphrag_config(root_dir, config_dir)
+            base_dir = Path(str(root_dir)) / config.storage.base_dir
+            data_dir = str(resolve_timestamp_path(base_dir))
         return data_dir, root_dir, config
 
     @staticmethod

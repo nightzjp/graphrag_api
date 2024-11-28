@@ -4,19 +4,19 @@ Licensed under the MIT License
 
 基于 graphrag\\query\\cli.py 修改
 """
-import asyncio
 import re
 import sys
+import asyncio
 from pathlib import Path
-from typing import cast
-from pydantic import validate_call
 from collections.abc import AsyncGenerator
 
 import pandas as pd
+from pydantic import validate_call
 
-from graphrag.config import GraphRagConfig
-from graphrag.config.resolve_timestamp_path import resolve_timestamp_path
+from graphrag.config import GraphRagConfig, load_config, resolve_path
 from graphrag.index.progress import PrintProgressReporter
+from graphrag.index.create_pipeline_config import create_pipeline_config
+from graphrag.utils.storage import _create_storage, _load_table_from_storage
 from graphrag.model.entity import Entity
 from graphrag.query.input.loaders.dfs import (
     store_entity_semantic_embeddings,
@@ -148,20 +148,28 @@ class SearchRunner(BaseGraph):
 
     def __get__global_agent(self):
         """获取global搜索引擎"""
-        data_dir, root_dir, config = self._configure_paths_and_settings(
-            self.data_dir, self.root_dir, self.config_dir
-        )
-        data_path = Path(data_dir)
+        root = Path(self.root_dir).resolve()
+        config = load_config(root)
 
-        final_nodes: pd.DataFrame = pd.read_parquet(
-            data_path / "create_final_nodes.parquet"
+        if self.data_dir:
+            config.storage.base_dir = str(resolve_path(self.data_dir, root))
+
+        dataframe_dict = self._resolve_parquet_files(
+            root_dir=self.root_dir,
+            config=config,
+            parquet_list=[
+                "create_final_nodes.parquet",
+                "create_final_entities.parquet",
+                "create_final_community_reports.parquet",
+            ],
+            optional_list=[]
         )
-        final_entities: pd.DataFrame = pd.read_parquet(
-            data_path / "create_final_entities.parquet"
-        )
-        final_community_reports: pd.DataFrame = pd.read_parquet(
-            data_path / "create_final_community_reports.parquet"
-        )
+
+        final_nodes: pd.DataFrame = dataframe_dict["create_final_nodes"]
+        final_entities: pd.DataFrame = dataframe_dict["create_final_entities"]
+        final_community_reports: pd.DataFrame = dataframe_dict[
+            "create_final_community_reports"
+        ]
 
         reports = read_indexer_reports(
             final_community_reports, final_nodes, self.community_level
@@ -188,28 +196,33 @@ class SearchRunner(BaseGraph):
 
     def __get__local_agent(self):
         """获取local搜索引擎"""
-        data_dir, root_dir, config = self._configure_paths_and_settings(
-            self.data_dir, self.root_dir, self.config_dir
-        )
-        data_path = Path(data_dir)
+        root = Path(self.root_dir).resolve()
+        config = load_config(root)
 
-        final_nodes = pd.read_parquet(data_path / "create_final_nodes.parquet")
-        final_community_reports = pd.read_parquet(
-            data_path / "create_final_community_reports.parquet"
+        if self.data_dir:
+            config.storage.base_dir = str(resolve_path(self.data_dir, root))
+
+        dataframe_dict = self._resolve_parquet_files(
+            root_dir=self.root_dir,
+            config=config,
+            parquet_list=[
+                "create_final_nodes.parquet",
+                "create_final_community_reports.parquet",
+                "create_final_text_units.parquet",
+                "create_final_relationships.parquet",
+                "create_final_entities.parquet",
+            ],
+            optional_list=["create_final_covariates.parquet"]
         )
-        final_text_units = pd.read_parquet(
-            data_path / "create_final_text_units.parquet"
-        )
-        final_relationships = pd.read_parquet(
-            data_path / "create_final_relationships.parquet"
-        )
-        final_entities = pd.read_parquet(data_path / "create_final_entities.parquet")
-        final_covariates_path = data_path / "create_final_covariates.parquet"
-        final_covariates = (
-            pd.read_parquet(final_covariates_path)
-            if final_covariates_path.exists()
-            else None
-        )
+
+        final_nodes: pd.DataFrame = dataframe_dict["create_final_nodes"]
+        final_community_reports: pd.DataFrame = dataframe_dict[
+            "create_final_community_reports"
+        ]
+        final_text_units: pd.DataFrame = dataframe_dict["create_final_text_units"]
+        final_relationships: pd.DataFrame = dataframe_dict["create_final_relationships"]
+        final_entities: pd.DataFrame = dataframe_dict["create_final_entities"]
+        final_covariates: pd.DataFrame | None = dataframe_dict["create_final_covariates"]
 
         vector_store_args = (
             config.embeddings.vector_store if config.embeddings.vector_store else {}
@@ -221,20 +234,16 @@ class SearchRunner(BaseGraph):
         entities = read_indexer_entities(
             final_nodes, final_entities, self.community_level
         )
-        base_dir = Path(str(root_dir)) / config.storage.base_dir
-        resolved_base_dir = resolve_timestamp_path(base_dir)
-        lancedb_dir = resolved_base_dir / "lancedb"
+
+        lancedb_dir = Path(config.storage.base_dir) / "lancedb"
+
         vector_store_args.update({"db_uri": str(lancedb_dir)})
         description_embedding_store = self.__get_embedding_description_store(
             entities=entities,
             vector_store_type=vector_store_type,
             config_args=vector_store_args,
         )
-        covariates = (
-            read_indexer_covariates(final_covariates)
-            if final_covariates is not None
-            else []
-        )
+        covariates = read_indexer_covariates(final_covariates) if final_covariates is not None else []
 
         return get_local_search_engine(
             config,
@@ -258,21 +267,6 @@ class SearchRunner(BaseGraph):
             )
         return asyncio.run(self.search(search_agent=self.__local_agent, query=query))
 
-    def _configure_paths_and_settings(
-        self,
-        data_dir: str | None,
-        root_dir: str | None,
-        config_dir: str | None,
-    ) -> tuple[str, str | None, GraphRagConfig]:
-        config = self._create_graphrag_config(root_dir, config_dir)
-        if data_dir is None and root_dir is None:
-            msg = "Either data_dir or root_dir must be provided."
-            raise ValueError(msg)
-        if data_dir is None:
-            base_dir = Path(str(root_dir)) / config.storage.base_dir
-            data_dir = str(resolve_timestamp_path(base_dir))
-        return data_dir, root_dir, config
-
     @staticmethod
     def _infer_data_dir(root: str) -> str:
         output = Path(root) / "output"
@@ -288,6 +282,37 @@ class SearchRunner(BaseGraph):
                 return str((folder / "artifacts").absolute())
         msg = f"Could not infer data directory from root={root}"
         raise ValueError(msg)
+
+    @staticmethod
+    def _resolve_parquet_files(
+            root_dir: str,
+            config: GraphRagConfig,
+            parquet_list: list[str],
+            optional_list: list[str],
+    ) -> dict[str, pd.DataFrame]:
+        """Read parquet files to a dataframe dict."""
+        dataframe_dict = {}
+        pipeline_config = create_pipeline_config(config)
+        storage_obj = _create_storage(root_dir=root_dir, config=pipeline_config.storage)
+        for parquet_file in parquet_list:
+            df_key = parquet_file.split(".")[0]
+            df_value = asyncio.run(
+                _load_table_from_storage(name=parquet_file, storage=storage_obj)
+            )
+            dataframe_dict[df_key] = df_value
+
+        # for optional parquet files, set the dict entry to None instead of erroring out if it does not exist
+        for optional_file in optional_list:
+            file_exists = asyncio.run(storage_obj.has(optional_file))
+            df_key = optional_file.split(".")[0]
+            if file_exists:
+                df_value = asyncio.run(
+                    _load_table_from_storage(name=optional_file, storage=storage_obj)
+                )
+                dataframe_dict[df_key] = df_value
+            else:
+                dataframe_dict[df_key] = None
+        return dataframe_dict
 
     def _create_graphrag_config(
         self,

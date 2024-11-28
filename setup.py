@@ -11,7 +11,7 @@ with open(os.path.join(BASEDIR, "requirements.txt")) as f:
 
 setup(
     name="graphrag_api",
-    version="0.3.2",
+    version="0.3.3",
     packages=find_packages(exclude=["tests"]),
     install_requires=requirements,
     author="nightzjp",

@@ -14,14 +14,11 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
-from graphrag.config import create_graphrag_config
-from graphrag.config.logging import enable_logging_with_config
-from graphrag.config.enums import CacheType
-from graphrag.config.config_file_loader import load_config_from_file, resolve_config_path_with_root
+from graphrag.config import CacheType, enable_logging_with_config, load_config
+
 from graphrag.index.validate_config import validate_config_names
 from graphrag.index.api import build_index
 from graphrag.index.progress import ProgressReporter
-
 from graphrag.index.progress.load_progress_reporter import load_progress_reporter
 
 from graphrag.index.graph.extractors.claims.prompts import CLAIM_EXTRACTION_PROMPT
@@ -46,27 +43,27 @@ class GraphRagIndexer(BaseGraph):
         root: str = ".",
         verbose: bool = False,
         resume: Optional[str] = None,
+        update_index_id: Optional[str] = None,
         memprofile: bool = False,
         nocache: bool = False,
         reporter: Optional[str] = "",
-        config: Optional[str] = "",
+        config_filepath: Optional[str] = "",
         emit: Optional[str] = "",
         dryrun: bool = False,
         init: bool = False,
-        overlay_defaults: bool = False,
         skip_validations: bool = False
     ):
         self.root = root
         self.verbose = verbose
         self.resume = resume
+        self.update_index_id = update_index_id
         self.memprofile = memprofile
         self.nocache = nocache
         self.reporter = reporter
-        self.config = config
+        self.config_filepath = config_filepath
         self.emit = emit
         self.dryrun = dryrun
         self.init = init
-        self.overlay_defaults = overlay_defaults
         self.skip_validations = skip_validations
         self.cli = False
 
@@ -146,37 +143,28 @@ class GraphRagIndexer(BaseGraph):
             self._initialize_project_at(self.root, progress_reporter)
             sys.exit(0)
 
-        if self.overlay_defaults or self.config:
-            config_path = (
-                Path(self.root) / self.config if self.config else resolve_config_path_with_root(self.root)
-            )
-            default_config = load_config_from_file(config_path)
-        else:
-            try:
-                config_path = resolve_config_path_with_root(self.root)
-                default_config = load_config_from_file(config_path)
-            except FileNotFoundError:
-                default_config = create_graphrag_config(root_dir=self.root)
+        root = Path(self.root).resolve()
+        config = load_config(root, self.config_filepath, run_id)
 
         if self.nocache:
-            default_config.cache.type = CacheType.none
+            config.cache.type = CacheType.none
 
         enabled_logging, log_path = enable_logging_with_config(
-            default_config, run_id, self.verbose
+            config, self.verbose
         )
         if enabled_logging:
             info(f"Logging enabled at {log_path}", True)
         else:
             info(
-                f"Logging not enabled for config {self.redact(default_config.model_dump())}",
+                f"Logging not enabled for config {self.redact(config.model_dump())}",
                 True,
             )
 
         if self.skip_validations:
-            validate_config_names(progress_reporter, default_config)
+            validate_config_names(progress_reporter, config)
         info(f"Starting pipeline run for: {run_id}, {self.dryrun=}", self.verbose)
         info(
-            f"Using default configuration: {self.redact(default_config.model_dump())}",
+            f"Using default configuration: {self.redact(config.model_dump())}",
             self.verbose,
         )
 
@@ -190,11 +178,13 @@ class GraphRagIndexer(BaseGraph):
 
         outputs = asyncio.run(
             build_index(
-                default_config,
-                run_id,
-                self.memprofile,
-                progress_reporter,
-                pipeline_emit
+                config=config,
+                run_id=run_id,
+                is_resume_run=bool(self.resume),
+                is_update_run=bool(self.update_index_id),
+                memory_profile=self.memprofile,
+                progress_reporter=progress_reporter,
+                emit=pipeline_emit
             )
         )
 

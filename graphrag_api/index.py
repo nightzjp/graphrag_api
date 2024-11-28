@@ -14,11 +14,12 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
-from graphrag.config import CacheType, enable_logging_with_config, load_config
+from graphrag.config import CacheType, enable_logging_with_config, load_config, resolve_paths
 
 from graphrag.index.validate_config import validate_config_names
 from graphrag.index.api import build_index
-from graphrag.index.progress import ProgressReporter
+from graphrag.index.emit.types import TableEmitterType
+from graphrag.index.progress import ProgressReporter, ReporterType
 from graphrag.index.progress.load_progress_reporter import load_progress_reporter
 
 from graphrag.index.graph.extractors.claims.prompts import CLAIM_EXTRACTION_PROMPT
@@ -46,12 +47,13 @@ class GraphRagIndexer(BaseGraph):
         update_index_id: Optional[str] = None,
         memprofile: bool = False,
         nocache: bool = False,
-        reporter: Optional[str] = "",
+        reporter: ReporterType = ReporterType.RICH,
         config_filepath: Optional[str] = "",
-        emit: Optional[str] = "",
+        emit: list[TableEmitterType] = None,
         dryrun: bool = False,
         init: bool = False,
-        skip_validations: bool = False
+        skip_validations: bool = False,
+        output_dir: Optional[str] = None,
     ):
         self.root = root
         self.verbose = verbose
@@ -65,6 +67,7 @@ class GraphRagIndexer(BaseGraph):
         self.dryrun = dryrun
         self.init = init
         self.skip_validations = skip_validations
+        self.output_dir = output_dir
         self.cli = False
 
     @staticmethod
@@ -135,16 +138,20 @@ class GraphRagIndexer(BaseGraph):
 
     def run(self):
         """Run the pipeline with the given config."""
-        progress_reporter = load_progress_reporter(self.reporter or "rich")
+        progress_reporter = load_progress_reporter(self.reporter)
         info, error, success = self.logger(progress_reporter)
-        run_id = self.resume or time.strftime("%Y%m%d-%H%M%S")
+        run_id = self.resume or self.update_index_id or time.strftime("%Y%m%d-%H%M%S")
 
         if self.init:
             self._initialize_project_at(self.root, progress_reporter)
             sys.exit(0)
 
         root = Path(self.root).resolve()
-        config = load_config(root, self.config_filepath, run_id)
+        config = load_config(root, self.config_filepath)
+
+        config.storage.base_dir = self.output_dir or config.storage.base_dir
+        config.reporting.base_dir = self.output_dir or config.reporting.base_dir
+        resolve_paths(config, run_id)
 
         if self.nocache:
             config.cache.type = CacheType.none
@@ -172,8 +179,6 @@ class GraphRagIndexer(BaseGraph):
             info("Dry run complete, exiting...", True)
             sys.exit(0)
 
-        pipeline_emit = self.emit.split(",") if self.emit else None
-
         self.register_signal_handlers(progress_reporter)
 
         outputs = asyncio.run(
@@ -184,7 +189,7 @@ class GraphRagIndexer(BaseGraph):
                 is_update_run=bool(self.update_index_id),
                 memory_profile=self.memprofile,
                 progress_reporter=progress_reporter,
-                emit=pipeline_emit
+                emit=self.emit
             )
         )
 

@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator
 import pandas as pd
 from pydantic import validate_call
 
-from graphrag.config import GraphRagConfig, load_config, resolve_path
+from graphrag.config import GraphRagConfig, load_config, resolve_paths
 from graphrag.index.progress import PrintProgressReporter
 from graphrag.index.create_pipeline_config import create_pipeline_config
 from graphrag.utils.storage import _create_storage, _load_table_from_storage
@@ -43,13 +43,13 @@ reporter = PrintProgressReporter("")
 class SearchRunner(BaseGraph):
     def __init__(
         self,
-        config_dir=None,
+        config_filepath=None,
         data_dir=None,
         root_dir="rag",
         community_level=2,
         response_type="Single Paragraph",
     ):
-        self.config_dir = config_dir
+        self.config_filepath = config_filepath
         self.data_dir = data_dir
         self.root_dir = root_dir
         self.community_level = community_level
@@ -149,10 +149,10 @@ class SearchRunner(BaseGraph):
     def __get__global_agent(self):
         """获取global搜索引擎"""
         root = Path(self.root_dir).resolve()
-        config = load_config(root)
+        config = load_config(root, self.config_filepath)
 
-        if self.data_dir:
-            config.storage.base_dir = str(resolve_path(self.data_dir, root))
+        config.storage.base_dir = self.data_dir or config.storage.base_dir
+        resolve_paths(config)
 
         dataframe_dict = self._resolve_parquet_files(
             root_dir=self.root_dir,
@@ -197,10 +197,10 @@ class SearchRunner(BaseGraph):
     def __get__local_agent(self):
         """获取local搜索引擎"""
         root = Path(self.root_dir).resolve()
-        config = load_config(root)
+        config = load_config(root, self.config_filepath)
 
-        if self.data_dir:
-            config.storage.base_dir = str(resolve_path(self.data_dir, root))
+        config.storage.base_dir = self.data_dir or config.storage.base_dir
+        resolve_paths(config)
 
         dataframe_dict = self._resolve_parquet_files(
             root_dir=self.root_dir,

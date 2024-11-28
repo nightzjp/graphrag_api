@@ -5,6 +5,9 @@ import argparse
 
 from graphrag_api.index import GraphRagIndexer
 
+from graphrag.index.progress.types import ReporterType
+from graphrag.index.emit.types import TableEmitterType
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -26,7 +29,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--root",
-        help="If no configuration is defined, the root directory to use for input data and output data. Default value: the current directory",
+        help="The root directory to use for input data and output data, if no configuration is defined. Default: current directory",
         # Only required if config is not defined
         required=False,
         default=".",
@@ -37,25 +40,29 @@ if __name__ == "__main__":
         help="Resume a given data run leveraging Parquet output files.",
         # Only required if config is not defined
         required=False,
-        default=None,
+        default="",
         type=str,
     )
     parser.add_argument(
         "--reporter",
         help="The progress reporter to use. Valid values are 'rich', 'print', or 'none'",
-        type=str,
+        default=ReporterType.RICH,
+        type=ReporterType,
+        choices=list(ReporterType)
     )
     parser.add_argument(
         "--emit",
-        help="The data formats to emit, comma-separated. Valid values are 'parquet' and 'csv'. default='parquet,csv'",
+        help="The data formats to emit, comma-separated. Default: parquet",
+        default=TableEmitterType.Parquet.value,
         type=str,
+        choices=list(TableEmitterType),
     )
     parser.add_argument(
         "--dryrun",
-        help="Run the pipeline without actually executing any steps and inspect the configuration.",
+        help="Run the pipeline without executing any steps to inspect/validate the configuration",
         action="store_true",
     )
-    parser.add_argument("--nocache", help="Disable LLM cache.", action="store_true")
+    parser.add_argument("--nocache", help="Disable LLM cache.", action="store_true", default=False)
     parser.add_argument(
         "--init",
         help="Create an initial configuration in the given path.",
@@ -74,6 +81,13 @@ if __name__ == "__main__":
         default=None,
         type=str,
     )
+    parser.add_argument(
+        "--output",
+        help="The output directory to use for the pipeline.",
+        required=False,
+        default=None,
+        type=str,
+    )
     args = parser.parse_args()
 
     if args.resume and args.update_index:
@@ -84,14 +98,16 @@ if __name__ == "__main__":
         root=args.root,
         verbose=args.verbose or False,
         resume=args.resume,
+        update_index_id=args.update_index,
         memprofile=args.memprofile or False,
         nocache=args.nocache or False,
         reporter=args.reporter,
         config_filepath=args.config,
-        emit=args.emit,
+        emit=[TableEmitterType(value) for value in args.emit.split(",")],
         dryrun=args.dryrun or False,
         init=args.init or False,
         skip_validations=args.skip_validations or False,
+        output_dir=args.ourput,
     )
 
     indexer.run()

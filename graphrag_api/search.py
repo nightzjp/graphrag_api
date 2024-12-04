@@ -13,27 +13,41 @@ from collections.abc import AsyncGenerator
 import pandas as pd
 from pydantic import validate_call
 
-from graphrag.config import GraphRagConfig, load_config, resolve_paths
-from graphrag.index.progress import PrintProgressReporter
+from graphrag.config.load_config import load_config
+from graphrag.config.models.graph_rag_config import GraphRagConfig
+from graphrag.config.resolve_path import resolve_paths
+from graphrag.logging.print_progress import PrintProgressReporter
 from graphrag.index.create_pipeline_config import create_pipeline_config
 from graphrag.utils.storage import _create_storage, _load_table_from_storage
+from graphrag.utils.embeddings import create_collection_name
+from graphrag.index.config.embeddings import (
+    entity_description_embedding,
+    community_full_content_embedding,
+)
 from graphrag.model.entity import Entity
 from graphrag.query.input.loaders.dfs import (
     store_entity_semantic_embeddings,
 )
 from graphrag.query.structured_search.base import SearchResult
-from graphrag.vector_stores import VectorStoreFactory, VectorStoreType
+from graphrag.vector_stores.base import BaseVectorStore
+from graphrag.vector_stores.factory import VectorStoreFactory, VectorStoreType
 from graphrag.vector_stores.lancedb import LanceDBVectorStore
 
-from graphrag.query.factories import get_global_search_engine, get_local_search_engine
+from graphrag.query.factories import (
+    get_global_search_engine,
+    get_local_search_engine,
+    get_drift_search_engine,
+)
 from graphrag.query.indexer_adapters import (
+    read_indexer_communities,
     read_indexer_covariates,
     read_indexer_entities,
     read_indexer_relationships,
+    read_indexer_report_embeddings,
     read_indexer_reports,
     read_indexer_text_units,
 )
-from graphrag.query.api import _reformat_context_data
+from graphrag.api.query import _reformat_context_data
 
 from graphrag_api.common import BaseGraph
 
@@ -57,6 +71,22 @@ class SearchRunner(BaseGraph):
         self.config = None
         self.__local_agent = self.__get__local_agent()
         self.__global_agent = self.__get__global_agent()
+        self.__drift_agent = self.__get__drift_agent()
+
+    @staticmethod
+    @validate_call(config={"arbitrary_types_allowed": True})
+    async def direct(direct_agent, query):
+        result: SearchResult = await direct_agent.asearch(query=query)
+        response = result.response
+        context_data = _reformat_context_data(result.context_data)  # type: ignore
+
+        match response:
+            case dict():
+                return response["nodes"][0]["answer"], context_data  # type: ignore
+            case str():
+                return response, context_data
+            case list():
+                return response, context_data
 
     @staticmethod
     @validate_call(config={"arbitrary_types_allowed": True})
@@ -146,12 +176,90 @@ class SearchRunner(BaseGraph):
 
         return description_embedding_store
 
+    def run_direct_search(self, query, streaming=False):
+        return asyncio.run(self.direct(direct_agent=self.__drift_agent, query=query))
+
+    def __get__drift_agent(self):
+        root = Path(self.root_dir).resolve()
+        config = load_config(root, self.config_filepath)
+        config.storage.base_dir = (
+            str(self.data_dir) if self.data_dir else config.storage.base_dir
+        )
+        resolve_paths(config)
+
+        dataframe_dict = self._resolve_parquet_files(
+            root_dir=self.root_dir,
+            config=config,
+            parquet_list=[
+                "create_final_nodes.parquet",
+                "create_final_community_reports.parquet",
+                "create_final_text_units.parquet",
+                "create_final_relationships.parquet",
+                "create_final_entities.parquet",
+            ],
+            optional_list=[]
+        )
+        final_nodes: pd.DataFrame = dataframe_dict["create_final_nodes"]
+        final_community_reports: pd.DataFrame = dataframe_dict[
+            "create_final_community_reports"
+        ]
+        final_text_units: pd.DataFrame = dataframe_dict["create_final_text_units"]
+        final_relationships: pd.DataFrame = dataframe_dict["create_final_relationships"]
+        final_entities: pd.DataFrame = dataframe_dict["create_final_entities"]
+
+        config = self._patch_vector_store(
+            config,
+            final_nodes,
+            final_entities,
+            self.community_level,
+            with_reports=final_community_reports,
+        )
+
+        vector_store_type = config.embeddings.vector_store.get("type")  # type: ignore
+        vector_store_args = config.embeddings.vector_store
+        if vector_store_type == VectorStoreType.LanceDB:
+            db_uri = config.embeddings.vector_store["db_uri"]  # type: ignore
+            lancedb_dir = Path(config.root_dir).resolve() / db_uri
+            vector_store_args["db_uri"] = str(lancedb_dir)  # type: ignore
+
+        reporter.info(f"Vector Store Args: {self.redact(vector_store_args)}")  # type: ignore
+
+        description_embedding_store = self._get_embedding_store(
+            config_args=vector_store_args,  # type: ignore
+            embedding_name=entity_description_embedding,
+        )
+
+        full_content_embedding_store = self._get_embedding_store(
+            config_args=vector_store_args,  # type: ignore
+            embedding_name=community_full_content_embedding,
+        )
+
+        _entities = read_indexer_entities(
+            final_nodes, final_entities, self.community_level
+        )
+        _reports = read_indexer_reports(
+            final_community_reports, final_nodes, self.community_level
+        )
+        read_indexer_report_embeddings(_reports, full_content_embedding_store)
+        prompt = self._load_search_prompt(config.root_dir, config.drift_search.prompt)
+
+        return get_drift_search_engine(
+            config=config,
+            reports=_reports,
+            text_units=read_indexer_text_units(final_text_units),
+            entities=_entities,
+            relationships=read_indexer_relationships(final_relationships),
+            description_embedding_store=description_embedding_store,
+            local_system_prompt=prompt,
+        )
+
     def __get__global_agent(self):
         """获取global搜索引擎"""
         root = Path(self.root_dir).resolve()
         config = load_config(root, self.config_filepath)
-
-        config.storage.base_dir = self.data_dir or config.storage.base_dir
+        config.storage.base_dir = (
+            str(self.data_dir) if self.data_dir else config.storage.base_dir
+        )
         resolve_paths(config)
 
         dataframe_dict = self._resolve_parquet_files(
@@ -160,28 +268,50 @@ class SearchRunner(BaseGraph):
             parquet_list=[
                 "create_final_nodes.parquet",
                 "create_final_entities.parquet",
+                "create_final_communities.parquet",
                 "create_final_community_reports.parquet",
             ],
-            optional_list=[]
+            optional_list=[],
         )
 
         final_nodes: pd.DataFrame = dataframe_dict["create_final_nodes"]
         final_entities: pd.DataFrame = dataframe_dict["create_final_entities"]
+        final_communities: pd.DataFrame = dataframe_dict["create_final_communities"]
         final_community_reports: pd.DataFrame = dataframe_dict[
             "create_final_community_reports"
         ]
 
+        communities = read_indexer_communities(
+            final_communities, final_nodes, final_community_reports
+        )
         reports = read_indexer_reports(
-            final_community_reports, final_nodes, self.community_level
+            final_community_reports,
+            final_nodes,
+            self.community_level,
+            dynamic_community_selection=False,
         )
         entities = read_indexer_entities(
             final_nodes, final_entities, self.community_level
+        )
+        map_prompt = self._load_search_prompt(
+            config.root_dir, config.global_search.map_prompt
+        )
+        reduce_prompt = self._load_search_prompt(
+            config.root_dir, config.global_search.reduce_prompt
+        )
+        knowledge_prompt = self._load_search_prompt(
+            config.root_dir, config.global_search.knowledge_prompt
         )
         return get_global_search_engine(
             config,
             reports=reports,
             entities=entities,
+            communities=communities,
             response_type=self.response_type,
+            dynamic_community_selection=False,
+            map_system_prompt=map_prompt,
+            reduce_system_prompt=reduce_prompt,
+            general_knowledge_inclusion_prompt=knowledge_prompt,
         )
 
     def run_global_search(self, query, streaming=False):
@@ -198,8 +328,9 @@ class SearchRunner(BaseGraph):
         """获取local搜索引擎"""
         root = Path(self.root_dir).resolve()
         config = load_config(root, self.config_filepath)
-
-        config.storage.base_dir = self.data_dir or config.storage.base_dir
+        config.storage.base_dir = (
+            str(self.data_dir) if self.data_dir else config.storage.base_dir
+        )
         resolve_paths(config)
 
         dataframe_dict = self._resolve_parquet_files(
@@ -212,7 +343,7 @@ class SearchRunner(BaseGraph):
                 "create_final_relationships.parquet",
                 "create_final_entities.parquet",
             ],
-            optional_list=["create_final_covariates.parquet"]
+            optional_list=["create_final_covariates.parquet"],
         )
 
         final_nodes: pd.DataFrame = dataframe_dict["create_final_nodes"]
@@ -222,40 +353,50 @@ class SearchRunner(BaseGraph):
         final_text_units: pd.DataFrame = dataframe_dict["create_final_text_units"]
         final_relationships: pd.DataFrame = dataframe_dict["create_final_relationships"]
         final_entities: pd.DataFrame = dataframe_dict["create_final_entities"]
-        final_covariates: pd.DataFrame | None = dataframe_dict["create_final_covariates"]
+        final_covariates: pd.DataFrame | None = dataframe_dict[
+            "create_final_covariates"
+        ]
 
-        vector_store_args = (
-            config.embeddings.vector_store if config.embeddings.vector_store else {}
+        config = self._patch_vector_store(
+            config, final_nodes, final_entities, self.community_level
         )
 
-        reporter.info(f"Vector Store Args: {vector_store_args}")
-        vector_store_type = vector_store_args.get("type", VectorStoreType.LanceDB)
+        vector_store_type = config.embeddings.vector_store.get("type")
+        vector_store_args = config.embeddings.vector_store
+        if vector_store_type == VectorStoreType.LanceDB:
+            db_uri = config.embeddings.vector_store["db_uri"]  # type: ignore
+            lancedb_dir = Path(config.root_dir).resolve() / db_uri
+            vector_store_args["db_uri"] = str(lancedb_dir)  # type: ignore
 
-        entities = read_indexer_entities(
+        reporter.info(f"Vector Store Args: {self.redact(vector_store_args)}")
+
+        description_embedding_store = self._get_embedding_store(
+            config_args=vector_store_args,  # type: ignore
+            embedding_name=entity_description_embedding,
+        )
+
+        _entities = read_indexer_entities(
             final_nodes, final_entities, self.community_level
         )
-
-        lancedb_dir = Path(config.storage.base_dir) / "lancedb"
-
-        vector_store_args.update({"db_uri": str(lancedb_dir)})
-        description_embedding_store = self.__get_embedding_description_store(
-            entities=entities,
-            vector_store_type=vector_store_type,
-            config_args=vector_store_args,
+        _covariates = (
+            read_indexer_covariates(final_covariates)
+            if final_covariates is not None
+            else []
         )
-        covariates = read_indexer_covariates(final_covariates) if final_covariates is not None else []
+        prompt = self._load_search_prompt(config.root_dir, config.local_search.prompt)
 
         return get_local_search_engine(
-            config,
+            config=config,
             reports=read_indexer_reports(
                 final_community_reports, final_nodes, self.community_level
             ),
             text_units=read_indexer_text_units(final_text_units),
-            entities=entities,
+            entities=_entities,
             relationships=read_indexer_relationships(final_relationships),
-            covariates={"claims": covariates},
+            covariates={"claims": _covariates},
             description_embedding_store=description_embedding_store,
             response_type=self.response_type,
+            system_prompt=prompt,
         )
 
     def run_local_search(self, query, streaming=False):
@@ -285,10 +426,10 @@ class SearchRunner(BaseGraph):
 
     @staticmethod
     def _resolve_parquet_files(
-            root_dir: str,
-            config: GraphRagConfig,
-            parquet_list: list[str],
-            optional_list: list[str],
+        root_dir: Path | str,
+        config: GraphRagConfig,
+        parquet_list: list[str],
+        optional_list: list[str] | None = None,
     ) -> dict[str, pd.DataFrame]:
         """Read parquet files to a dataframe dict."""
         dataframe_dict = {}
@@ -327,3 +468,113 @@ class SearchRunner(BaseGraph):
         # 使用正则表达式匹配 [Data: Sources (82, 14, 42, 98)] 这种格式的字符串
         cleaned_text = re.sub(r'\[Data: [^]]+\]', '', text)
         return cleaned_text
+
+    @staticmethod
+    def _patch_vector_store(
+        config: GraphRagConfig,
+        nodes: pd.DataFrame,
+        entities: pd.DataFrame,
+        community_level: int,
+        with_reports: pd.DataFrame | None = None,
+    ) -> GraphRagConfig:
+        # TODO: remove the following patch that checks for a vector_store prior to v1 release
+        # TODO: this is a backwards compatibility patch that injects the default vector_store settings into the config if it is not present
+        # Only applicable in situations involving a local vector_store (lancedb). The general idea:
+        # if vector_store not in config:
+        #     1. assume user is running local if vector_store is not in config
+        #     2. insert default vector_store in config
+        #     3 .create lancedb vector_store instance
+        #     4. upload vector embeddings from the input dataframes to the vector_store
+        if not config.embeddings.vector_store:
+            from graphrag.query.input.loaders.dfs import (
+                store_entity_semantic_embeddings,
+            )
+            from graphrag.vector_stores.lancedb import LanceDBVectorStore
+
+            config.embeddings.vector_store = {
+                "type": "lancedb",
+                "db_uri": f"{Path(config.storage.base_dir)}/lancedb",
+                "container_name": "default",
+                "overwrite": True,
+            }
+            description_embedding_store = LanceDBVectorStore(
+                db_uri=config.embeddings.vector_store["db_uri"],
+                collection_name=create_collection_name(
+                    config.embeddings.vector_store["container_name"],
+                    entity_description_embedding,
+                ),
+                overwrite=config.embeddings.vector_store["overwrite"],
+            )
+            description_embedding_store.connect(
+                db_uri=config.embeddings.vector_store["db_uri"]
+            )
+            # dump embeddings from the entities list to the description_embedding_store
+            _entities = read_indexer_entities(nodes, entities, community_level)
+            store_entity_semantic_embeddings(
+                entities=_entities, vectorstore=description_embedding_store
+            )
+
+            if with_reports is not None:
+                from graphrag.query.input.loaders.dfs import (
+                    store_reports_semantic_embeddings,
+                )
+                from graphrag.vector_stores.lancedb import LanceDBVectorStore
+
+                community_reports = with_reports
+                container_name = config.embeddings.vector_store["container_name"]
+                # Store report embeddings
+                _reports = read_indexer_reports(
+                    community_reports,
+                    nodes,
+                    community_level,
+                    content_embedding_col="full_content_embedding",
+                    config=config,
+                )
+
+                full_content_embedding_store = LanceDBVectorStore(
+                    db_uri=config.embeddings.vector_store["db_uri"],
+                    collection_name=create_collection_name(
+                        container_name, community_full_content_embedding
+                    ),
+                    overwrite=config.embeddings.vector_store["overwrite"],
+                )
+                full_content_embedding_store.connect(
+                    db_uri=config.embeddings.vector_store["db_uri"]
+                )
+                # dump embeddings from the reports list to the full_content_embedding_store
+                store_reports_semantic_embeddings(
+                    reports=_reports, vectorstore=full_content_embedding_store
+                )
+
+        return config
+
+    @staticmethod
+    def _get_embedding_store(
+        config_args: dict,
+        embedding_name: str,
+    ) -> BaseVectorStore:
+        """Get the embedding description store."""
+        vector_store_type = config_args["type"]
+        collection_name = create_collection_name(
+            config_args.get("container_name", "default"), embedding_name
+        )
+        embedding_store = VectorStoreFactory.get_vector_store(
+            vector_store_type=vector_store_type,
+            kwargs={**config_args, "collection_name": collection_name},
+        )
+        embedding_store.connect(**config_args)
+        return embedding_store
+
+    @staticmethod
+    def _load_search_prompt(root_dir: str, prompt_config: str | None) -> str | None:
+        """
+        Load the search prompt from disk if configured.
+
+        If not, leave it empty - the search functions will load their defaults.
+
+        """
+        if prompt_config:
+            prompt_file = Path(root_dir) / prompt_config
+            if prompt_file.exists():
+                return prompt_file.read_bytes().decode(encoding="utf-8")
+        return None

@@ -15,6 +15,7 @@ class SearchType(Enum):
 
     LOCAL = "local"
     GLOBAL = "global"
+    DIRFT = "dirft"
 
     def __str__(self):
         """Return the string representation of the enum value."""
@@ -79,7 +80,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     search_runner = SearchRunner(
-        config_dir=args.config,
+        config_filepath=args.config,
         data_dir=args.data,
         root_dir=args.root,
         community_level=args.community_level,
@@ -91,5 +92,7 @@ if __name__ == "__main__":
             search_runner.run_local_search(query=args.query[0], streaming=False)
         case SearchType.GLOBAL:
             search_runner.run_global_search(query=args.query[0], streaming=False)
+        case SearchType.DIRFT:
+            search_runner.run_direct_search(query=args.query[0])
         case _:
             raise ValueError(INVALID_METHOD_ERROR)

@@ -14,21 +14,32 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
-from graphrag.config import CacheType, enable_logging_with_config, load_config, resolve_paths
+from graphrag.api import build_index
+from graphrag.config.init_content import INIT_DOTENV, INIT_YAML
+from graphrag.config.load_config import load_config
+from graphrag.config.logging import enable_logging_with_config
+from graphrag.config.resolve_path import resolve_paths
+from graphrag.config.enums import CacheType
+from graphrag.logging.factories import create_progress_reporter
+from graphrag.logging.types import ReporterType
+from graphrag.prompts.index.entity_extraction import GRAPH_EXTRACTION_PROMPT
+from graphrag.prompts.index.summarize_descriptions import SUMMARIZE_PROMPT
+from graphrag.prompts.index.claim_extraction import CLAIM_EXTRACTION_PROMPT
+from graphrag.prompts.index.community_report import COMMUNITY_REPORT_PROMPT
+from graphrag.prompts.query.drift_search_system_prompt import DRIFT_LOCAL_SYSTEM_PROMPT
+from graphrag.prompts.query.global_search_map_system_prompt import MAP_SYSTEM_PROMPT
+from graphrag.prompts.query.global_search_reduce_system_prompt import (
+    REDUCE_SYSTEM_PROMPT,
+)
+from graphrag.prompts.query.global_search_knowledge_system_prompt import (
+    GENERAL_KNOWLEDGE_INSTRUCTION,
+)
+from graphrag.prompts.query.local_search_system_prompt import LOCAL_SEARCH_SYSTEM_PROMPT
+from graphrag.prompts.query.question_gen_system_prompt import QUESTION_SYSTEM_PROMPT
 
 from graphrag.index.validate_config import validate_config_names
-from graphrag.index.api import build_index
+from graphrag.logging.base import ProgressReporter
 from graphrag.index.emit.types import TableEmitterType
-from graphrag.index.progress import ProgressReporter, ReporterType
-from graphrag.index.progress.load_progress_reporter import load_progress_reporter
-
-from graphrag.index.graph.extractors.claims.prompts import CLAIM_EXTRACTION_PROMPT
-from graphrag.index.graph.extractors.community_reports.prompts import (
-    COMMUNITY_REPORT_PROMPT,
-)
-from graphrag.index.graph.extractors.graph.prompts import GRAPH_EXTRACTION_PROMPT
-from graphrag.index.graph.extractors.summarize.prompts import SUMMARIZE_PROMPT
-from graphrag.index.init_content import INIT_DOTENV, INIT_YAML
 
 from graphrag_api.common import BaseGraph
 
@@ -49,7 +60,7 @@ class GraphRagIndexer(BaseGraph):
         nocache: bool = False,
         reporter: ReporterType = ReporterType.RICH,
         config_filepath: Optional[str] = "",
-        emit: list[TableEmitterType] = None,
+        emit=TableEmitterType.Parquet.value,
         dryrun: bool = False,
         init: bool = False,
         skip_validations: bool = False,
@@ -57,13 +68,13 @@ class GraphRagIndexer(BaseGraph):
     ):
         self.root = root
         self.verbose = verbose
-        self.resume = resume
+        self.resume = resume  # False表示修改
         self.update_index_id = update_index_id
         self.memprofile = memprofile
         self.nocache = nocache
         self.reporter = reporter
         self.config_filepath = config_filepath
-        self.emit = emit
+        self.emit = [TableEmitterType(value.strip()) for value in emit.split(",")]
         self.dryrun = dryrun
         self.init = init
         self.skip_validations = skip_validations
@@ -107,58 +118,44 @@ class GraphRagIndexer(BaseGraph):
 
         return info, error, success
 
-    @staticmethod
-    def redact(input: dict) -> str:
-        """Sanitize the config json."""
-
-        def redact_dict(input: dict) -> dict:
-            if not isinstance(input, dict):
-                return input
-
-            result = {}
-            for key, value in input.items():
-                if key in {
-                    "api_key",
-                    "connection_string",
-                    "container_name",
-                    "organization",
-                }:
-                    if value is not None:
-                        result[key] = "==== REDACTED ===="
-                elif isinstance(value, dict):
-                    result[key] = redact_dict(value)
-                elif isinstance(value, list):
-                    result[key] = [redact_dict(i) for i in value]
-                else:
-                    result[key] = value
-            return result
-
-        redacted_dict = redact_dict(input)
-        return json.dumps(redacted_dict, indent=4)
-
-    def run(self):
+    def run(self, is_updated=False):
         """Run the pipeline with the given config."""
-        progress_reporter = load_progress_reporter(self.reporter)
+        progress_reporter = create_progress_reporter(self.reporter)
         info, error, success = self.logger(progress_reporter)
-        run_id = self.resume or self.update_index_id or time.strftime("%Y%m%d-%H%M%S")
+        run_id = self.resume or time.strftime("%Y%m%d-%H%M%S")
 
-        if self.init:
+        if self.init:  # 初始化
             self._initialize_project_at(self.root, progress_reporter)
             sys.exit(0)
 
         root = Path(self.root).resolve()
         config = load_config(root, self.config_filepath)
 
-        config.storage.base_dir = self.output_dir or config.storage.base_dir
-        config.reporting.base_dir = self.output_dir or config.reporting.base_dir
+        if is_updated:
+            if not config.update_index_storage:
+                from graphrag.config.defaults import (
+                    STORAGE_TYPE,
+                    UPDATE_STORAGE_BASE_DIR,
+                )
+                from graphrag.config.models.storage_config import StorageConfig
+
+                config.update_index_storage = StorageConfig(
+                    type=STORAGE_TYPE,
+                    base_dir=UPDATE_STORAGE_BASE_DIR,
+                )
+
+        config.storage.base_dir = (
+            str(self.output_dir) if self.output_dir else config.storage.base_dir
+        )
+        config.reporting.base_dir = (
+            str(self.output_dir) if self.output_dir else config.reporting.base_dir
+        )
         resolve_paths(config, run_id)
 
         if self.nocache:
             config.cache.type = CacheType.none
 
-        enabled_logging, log_path = enable_logging_with_config(
-            config, self.verbose
-        )
+        enabled_logging, log_path = enable_logging_with_config(config, self.verbose)
         if enabled_logging:
             info(f"Logging enabled at {log_path}", True)
         else:
@@ -186,10 +183,9 @@ class GraphRagIndexer(BaseGraph):
                 config=config,
                 run_id=run_id,
                 is_resume_run=bool(self.resume),
-                is_update_run=bool(self.update_index_id),
                 memory_profile=self.memprofile,
                 progress_reporter=progress_reporter,
-                emit=self.emit
+                emit=self.emit,
             )
         )
 
@@ -200,7 +196,8 @@ class GraphRagIndexer(BaseGraph):
         progress_reporter.stop()
         if encountered_errors:
             error(
-                "Errors occurred during the pipeline run, see logs for more details.", True
+                "Errors occurred during the pipeline run, see logs for more details.",
+                True,
             )
         else:
             success("All workflows completed successfully.", True)
@@ -220,43 +217,36 @@ class GraphRagIndexer(BaseGraph):
             msg = f"Project already initialized at {root}"
             raise ValueError(msg)
 
+        with settings_yaml.open("wb") as file:
+            file.write(INIT_YAML.encode(encoding="utf-8", errors="strict"))
+
         dotenv = root / ".env"
         if not dotenv.exists():
-            with settings_yaml.open("wb") as file:
-                file.write(INIT_YAML.encode(encoding="utf-8", errors="strict"))
-
-        with dotenv.open("wb") as file:
-            file.write(INIT_DOTENV.encode(encoding="utf-8", errors="strict"))
+            with dotenv.open("wb") as file:
+                file.write(INIT_DOTENV.encode(encoding="utf-8", errors="strict"))
 
         prompts_dir = root / "prompts"
         if not prompts_dir.exists():
             prompts_dir.mkdir(parents=True, exist_ok=True)
 
-        entity_extraction = prompts_dir / "entity_extraction.txt"
-        if not entity_extraction.exists():
-            with entity_extraction.open("wb") as file:
-                file.write(
-                    GRAPH_EXTRACTION_PROMPT.encode(encoding="utf-8", errors="strict")
-                )
+        prompts = {
+            "entity_extraction": GRAPH_EXTRACTION_PROMPT,
+            "summarize_descriptions": SUMMARIZE_PROMPT,
+            "claim_extraction": CLAIM_EXTRACTION_PROMPT,
+            "community_report": COMMUNITY_REPORT_PROMPT,
+            "drift_search_system_prompt": DRIFT_LOCAL_SYSTEM_PROMPT,
+            "global_search_map_system_prompt": MAP_SYSTEM_PROMPT,
+            "global_search_reduce_system_prompt": REDUCE_SYSTEM_PROMPT,
+            "global_search_knowledge_system_prompt": GENERAL_KNOWLEDGE_INSTRUCTION,
+            "local_search_system_prompt": LOCAL_SEARCH_SYSTEM_PROMPT,
+            "question_gen_system_prompt": QUESTION_SYSTEM_PROMPT,
+        }
 
-        summarize_descriptions = prompts_dir / "summarize_descriptions.txt"
-        if not summarize_descriptions.exists():
-            with summarize_descriptions.open("wb") as file:
-                file.write(SUMMARIZE_PROMPT.encode(encoding="utf-8", errors="strict"))
-
-        claim_extraction = prompts_dir / "claim_extraction.txt"
-        if not claim_extraction.exists():
-            with claim_extraction.open("wb") as file:
-                file.write(
-                    CLAIM_EXTRACTION_PROMPT.encode(encoding="utf-8", errors="strict")
-                )
-
-        community_report = prompts_dir / "community_report.txt"
-        if not community_report.exists():
-            with community_report.open("wb") as file:
-                file.write(
-                    COMMUNITY_REPORT_PROMPT.encode(encoding="utf-8", errors="strict")
-                )
+        for name, content in prompts.items():
+            prompt_file = prompts_dir / f"{name}.txt"
+            if not prompt_file.exists():
+                with prompt_file.open("wb") as file:
+                    file.write(content.encode(encoding="utf-8", errors="strict"))
 
     @staticmethod
     def _enable_logging(root: str, run_id: str, verbose: bool) -> None:
@@ -273,4 +263,3 @@ class GraphRagIndexer(BaseGraph):
             datefmt="%H:%M:%S",
             level=logging.DEBUG if verbose else logging.INFO,
         )
-

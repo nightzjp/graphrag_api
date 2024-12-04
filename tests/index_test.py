@@ -5,7 +5,7 @@ import argparse
 
 from graphrag_api.index import GraphRagIndexer
 
-from graphrag.index.progress.types import ReporterType
+from graphrag.logging.types import ReporterType
 from graphrag.index.emit.types import TableEmitterType
 
 if __name__ == "__main__":
@@ -48,7 +48,7 @@ if __name__ == "__main__":
         help="The progress reporter to use. Valid values are 'rich', 'print', or 'none'",
         default=ReporterType.RICH,
         type=ReporterType,
-        choices=list(ReporterType)
+        choices=list(ReporterType),
     )
     parser.add_argument(
         "--emit",
@@ -62,7 +62,9 @@ if __name__ == "__main__":
         help="Run the pipeline without executing any steps to inspect/validate the configuration",
         action="store_true",
     )
-    parser.add_argument("--nocache", help="Disable LLM cache.", action="store_true", default=False)
+    parser.add_argument(
+        "--nocache", help="Disable LLM cache.", action="store_true", default=False
+    )
     parser.add_argument(
         "--init",
         help="Create an initial configuration in the given path.",

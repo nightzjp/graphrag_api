@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from graphrag.config import create_graphrag_config
-from graphrag.index.progress import ProgressReporter
+from graphrag.logging.print_progress import ProgressReporter
 
 
 class BaseGraph:
@@ -42,3 +42,32 @@ class BaseGraph:
             )
             raise ValueError(msg)
         return result
+
+    @staticmethod
+    def redact(input: dict) -> str:
+        """Sanitize the config json."""
+
+        def redact_dict(input: dict) -> dict:
+            if not isinstance(input, dict):
+                return input
+
+            result = {}
+            for key, value in input.items():
+                if key in {
+                    "api_key",
+                    "connection_string",
+                    "container_name",
+                    "organization",
+                }:
+                    if value is not None:
+                        result[key] = "==== REDACTED ===="
+                elif isinstance(value, dict):
+                    result[key] = redact_dict(value)
+                elif isinstance(value, list):
+                    result[key] = [redact_dict(i) for i in value]
+                else:
+                    result[key] = value
+            return result
+
+        redacted_dict = redact_dict(input)
+        return json.dumps(redacted_dict, indent=4)

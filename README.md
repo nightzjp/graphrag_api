@@ -1,5 +1,13 @@
 # GraphRag-API
 
+------
+
+> 0.3.x 版本以后graphrag官方有好几个bug，提了pr之后一直没人审核。只能等官方bug解决了。
+> 
+> 不建议升级！！！
+> 
+> 新版本不止是bug！！
+
 GraphRag-API 在 GraphRag 库的基础上扩展，提供了 API 调用功能，用于执行本地和全局搜索。此扩展允许用户通过 RESTful API 调用，轻松地将 GraphRag 的强大搜索功能集成到他们的应用程序中。
 
 ## 功能
@@ -45,7 +53,7 @@ pip install -r requirements.txt
 1. 命令行初始化
 
 ```bash
-python -m graphrag index --init --root ./rag  # graphrag初始化
+graphrag init --root ./rag  # graphrag初始化
 python index_test.py --init --root rag  # graphrag_api初始化
 ```
 
@@ -65,7 +73,7 @@ indexer.run()
 1. 命令行初始化(会生成rag目录)
 
 ```bash
-python -m graphrag index --root rag  # graphrag初始化
+graphrag index --root ./rag  # graphrag初始化
 python index_test.py --root rag  # graphrag_api初始化
 ```
 

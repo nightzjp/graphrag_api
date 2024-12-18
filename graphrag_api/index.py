@@ -20,8 +20,8 @@ from graphrag.config.load_config import load_config
 from graphrag.config.logging import enable_logging_with_config
 from graphrag.config.resolve_path import resolve_paths
 from graphrag.config.enums import CacheType
-from graphrag.logging.factory import create_progress_reporter
-from graphrag.logging.types import ReporterType
+from graphrag.logger.base import ProgressLogger
+from graphrag.logger.factory import LoggerFactory, LoggerType
 from graphrag.prompts.index.entity_extraction import GRAPH_EXTRACTION_PROMPT
 from graphrag.prompts.index.summarize_descriptions import SUMMARIZE_PROMPT
 from graphrag.prompts.index.claim_extraction import CLAIM_EXTRACTION_PROMPT
@@ -38,7 +38,6 @@ from graphrag.prompts.query.local_search_system_prompt import LOCAL_SEARCH_SYSTE
 from graphrag.prompts.query.question_gen_system_prompt import QUESTION_SYSTEM_PROMPT
 
 from graphrag.index.validate_config import validate_config_names
-from graphrag.logging.base import ProgressReporter
 
 from graphrag_api.common import BaseGraph
 
@@ -57,7 +56,7 @@ class GraphRagIndexer(BaseGraph):
         update_index_id: Optional[str] = None,
         memprofile: bool = False,
         nocache: bool = False,
-        reporter: ReporterType = ReporterType.RICH,
+        logger: LoggerType = LoggerType.RICH,
         config_filepath: Optional[str] = "",
         dryrun: bool = False,
         init: bool = False,
@@ -70,7 +69,7 @@ class GraphRagIndexer(BaseGraph):
         self.update_index_id = update_index_id
         self.memprofile = memprofile
         self.nocache = nocache
-        self.reporter = reporter
+        self.logger = logger
         self.config_filepath = config_filepath
         self.dryrun = dryrun
         self.init = init
@@ -79,7 +78,7 @@ class GraphRagIndexer(BaseGraph):
         self.cli = False
 
     @staticmethod
-    def register_signal_handlers(reporter: ProgressReporter):
+    def register_signal_handlers(reporter: ProgressLogger):
         import signal
 
         def handle_signal(signum, _):
@@ -97,7 +96,7 @@ class GraphRagIndexer(BaseGraph):
             signal.signal(signal.SIGHUP, handle_signal)
 
     @staticmethod
-    def logger(reporter: ProgressReporter):
+    def _logger(reporter: ProgressLogger):
         def info(msg: str, verbose: bool = False):
             log.info(msg)
             if verbose:
@@ -117,8 +116,8 @@ class GraphRagIndexer(BaseGraph):
 
     def run(self, is_updated=False):
         """Run the pipeline with the given config."""
-        progress_reporter = create_progress_reporter(self.reporter)
-        info, error, success = self.logger(progress_reporter)
+        progress_reporter = LoggerFactory().create_logger(self.logger)
+        info, error, success = self._logger(progress_reporter)
         run_id = self.resume or time.strftime("%Y%m%d-%H%M%S")
 
         if self.init:  # 初始化
@@ -181,7 +180,7 @@ class GraphRagIndexer(BaseGraph):
                 run_id=run_id,
                 is_resume_run=bool(self.resume),
                 memory_profile=self.memprofile,
-                progress_reporter=progress_reporter,
+                progress_logger=progress_reporter,
             )
         )
 
@@ -201,7 +200,7 @@ class GraphRagIndexer(BaseGraph):
         sys.exit(1 if encountered_errors else 0)
 
     @staticmethod
-    def _initialize_project_at(path: str, reporter: ProgressReporter) -> None:
+    def _initialize_project_at(path: str, reporter: ProgressLogger) -> None:
         """Initialize the project at the given path."""
         reporter.info(f"Initializing project at {path}")
         root = Path(path)

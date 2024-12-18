@@ -16,23 +16,19 @@ from pydantic import validate_call
 from graphrag.config.load_config import load_config
 from graphrag.config.models.graph_rag_config import GraphRagConfig
 from graphrag.config.resolve_path import resolve_paths
-from graphrag.logging.print_progress import PrintProgressReporter
+from graphrag.logger.print_progress import PrintProgressLogger
 from graphrag.index.create_pipeline_config import create_pipeline_config
-from graphrag.storage.factory import create_storage
-from graphrag.utils.storage import _load_table_from_storage
+from graphrag.storage.factory import StorageFactory
+from graphrag.utils.storage import load_table_from_storage
 from graphrag.utils.embeddings import create_collection_name
 from graphrag.index.config.embeddings import (
     entity_description_embedding,
     community_full_content_embedding,
 )
-from graphrag.model.entity import Entity
-from graphrag.query.input.loaders.dfs import (
-    store_entity_semantic_embeddings,
-)
+
 from graphrag.query.structured_search.base import SearchResult
 from graphrag.vector_stores.base import BaseVectorStore
 from graphrag.vector_stores.factory import VectorStoreFactory, VectorStoreType
-from graphrag.vector_stores.lancedb import LanceDBVectorStore
 
 from graphrag.query.factory import (
     get_global_search_engine,
@@ -52,7 +48,7 @@ from graphrag.api.query import _reformat_context_data
 
 from graphrag_api.common import BaseGraph
 
-reporter = PrintProgressReporter("")
+reporter = PrintProgressLogger("")
 
 
 class SearchRunner(BaseGraph):
@@ -71,8 +67,8 @@ class SearchRunner(BaseGraph):
         self.response_type = response_type
         self.config = None
         self.__local_agent = self.__get__local_agent()
-        self.__global_agent = self.__get__global_agent()
-        self.__drift_agent = self.__get__drift_agent()
+        # self.__global_agent = self.__get__global_agent()
+        # self.__drift_agent = self.__get__drift_agent()
 
     @staticmethod
     @validate_call(config={"arbitrary_types_allowed": True})
@@ -130,53 +126,6 @@ class SearchRunner(BaseGraph):
         print()  # noqa: T201
         return full_response, context_data
 
-    @staticmethod
-    def __get_embedding_description_store(
-        entities: list[Entity],
-        vector_store_type: str = VectorStoreType.LanceDB,
-        config_args: dict | None = None,
-    ):
-        """Get the embedding description store."""
-        if not config_args:
-            config_args = {}
-
-        collection_name = config_args.get(
-            "query_collection_name", "entity_description_embeddings"
-        )
-        config_args.update({"collection_name": collection_name})
-        description_embedding_store = VectorStoreFactory.get_vector_store(
-            vector_store_type=vector_store_type, kwargs=config_args
-        )
-
-        description_embedding_store.connect(**config_args)
-
-        if config_args.get("overwrite", True):
-            # this step assumps the embeddings where originally stored in a file rather
-            # than a vector database
-
-            # dump embeddings from the entities list to the description_embedding_store
-            store_entity_semantic_embeddings(
-                entities=entities, vectorstore=description_embedding_store
-            )
-        else:
-            # load description embeddings to an in-memory lancedb vectorstore
-            # to connect to a remote db, specify url and port values.
-            description_embedding_store = LanceDBVectorStore(
-                collection_name=collection_name
-            )
-            description_embedding_store.connect(
-                db_uri=config_args.get("db_uri", "./lancedb")
-            )
-
-            # load data from an existing table
-            description_embedding_store.document_collection = (
-                description_embedding_store.db_connection.open_table(
-                    description_embedding_store.collection_name
-                )
-            )
-
-        return description_embedding_store
-
     def run_direct_search(self, query, streaming=False):
         return asyncio.run(self.direct(direct_agent=self.__drift_agent, query=query))
 
@@ -188,10 +137,9 @@ class SearchRunner(BaseGraph):
         )
         resolve_paths(config)
 
-        dataframe_dict = self._resolve_parquet_files(
-            root_dir=self.root_dir,
+        dataframe_dict = self._resolve_output_files(
             config=config,
-            parquet_list=[
+            output_list=[
                 "create_final_nodes.parquet",
                 "create_final_community_reports.parquet",
                 "create_final_text_units.parquet",
@@ -263,10 +211,9 @@ class SearchRunner(BaseGraph):
         )
         resolve_paths(config)
 
-        dataframe_dict = self._resolve_parquet_files(
-            root_dir=self.root_dir,
+        dataframe_dict = self._resolve_output_files(
             config=config,
-            parquet_list=[
+            output_list=[
                 "create_final_nodes.parquet",
                 "create_final_entities.parquet",
                 "create_final_communities.parquet",
@@ -334,17 +281,18 @@ class SearchRunner(BaseGraph):
         )
         resolve_paths(config)
 
-        dataframe_dict = self._resolve_parquet_files(
-            root_dir=self.root_dir,
+        dataframe_dict = self._resolve_output_files(
             config=config,
-            parquet_list=[
+            output_list=[
                 "create_final_nodes.parquet",
                 "create_final_community_reports.parquet",
                 "create_final_text_units.parquet",
                 "create_final_relationships.parquet",
                 "create_final_entities.parquet",
             ],
-            optional_list=["create_final_covariates.parquet"],
+            optional_list=[
+                "create_final_covariates.parquet",
+            ],
         )
 
         final_nodes: pd.DataFrame = dataframe_dict["create_final_nodes"]
@@ -354,20 +302,18 @@ class SearchRunner(BaseGraph):
         final_text_units: pd.DataFrame = dataframe_dict["create_final_text_units"]
         final_relationships: pd.DataFrame = dataframe_dict["create_final_relationships"]
         final_entities: pd.DataFrame = dataframe_dict["create_final_entities"]
-        final_covariates: pd.DataFrame | None = dataframe_dict[
-            "create_final_covariates"
-        ]
+        final_covariates: pd.DataFrame | None = dataframe_dict["create_final_covariates"]
 
         config = self._patch_vector_store(
             config, final_nodes, final_entities, self.community_level
         )
 
-        vector_store_type = config.embeddings.vector_store.get("type")
+        # vector_store_type = config.embeddings.vector_store.get("type")
         vector_store_args = config.embeddings.vector_store
-        if vector_store_type == VectorStoreType.LanceDB:
-            db_uri = config.embeddings.vector_store["db_uri"]  # type: ignore
-            lancedb_dir = Path(config.root_dir).resolve() / db_uri
-            vector_store_args["db_uri"] = str(lancedb_dir)  # type: ignore
+        # if vector_store_type == VectorStoreType.LanceDB:
+        #     db_uri = config.embeddings.vector_store["db_uri"]  # type: ignore
+        #     lancedb_dir = Path(config.root_dir).resolve() / db_uri
+        #     vector_store_args["db_uri"] = str(lancedb_dir)  # type: ignore
 
         reporter.info(f"Vector Store Args: {self.redact(vector_store_args)}")
 
@@ -426,34 +372,38 @@ class SearchRunner(BaseGraph):
         raise ValueError(msg)
 
     @staticmethod
-    def _resolve_parquet_files(
-        root_dir: Path | str,
-        config: GraphRagConfig,
-        parquet_list: list[str],
-        optional_list: list[str] | None = None,
+    def _resolve_output_files(
+            config: GraphRagConfig,
+            output_list: list[str],
+            optional_list: list[str] | None = None,
     ) -> dict[str, pd.DataFrame]:
         """Read parquet files to a dataframe dict."""
         dataframe_dict = {}
         pipeline_config = create_pipeline_config(config)
-        storage_obj = create_storage(config=pipeline_config.storage)
-        for parquet_file in parquet_list:
-            df_key = parquet_file.split(".")[0]
+        storage_config = pipeline_config.storage.model_dump()  # type: ignore
+        storage_obj = StorageFactory().create_storage(
+            storage_type=storage_config["type"], kwargs=storage_config
+        )
+        for output_file in output_list:
+            df_key = output_file.split(".")[0]
             df_value = asyncio.run(
-                _load_table_from_storage(name=parquet_file, storage=storage_obj)
+                load_table_from_storage(name=output_file, storage=storage_obj)
             )
             dataframe_dict[df_key] = df_value
 
-        # for optional parquet files, set the dict entry to None instead of erroring out if it does not exist
-        for optional_file in optional_list:
-            file_exists = asyncio.run(storage_obj.has(optional_file))
-            df_key = optional_file.split(".")[0]
-            if file_exists:
-                df_value = asyncio.run(
-                    _load_table_from_storage(name=optional_file, storage=storage_obj)
-                )
-                dataframe_dict[df_key] = df_value
-            else:
-                dataframe_dict[df_key] = None
+        # for optional output files, set the dict entry to None instead of erroring out if it does not exist
+        if optional_list:
+            for optional_file in optional_list:
+                file_exists = asyncio.run(storage_obj.has(optional_file))
+                df_key = optional_file.split(".")[0]
+                if file_exists:
+                    df_value = asyncio.run(
+                        load_table_from_storage(name=optional_file, storage=storage_obj)
+                    )
+                    dataframe_dict[df_key] = df_value
+                else:
+                    dataframe_dict[df_key] = None
+
         return dataframe_dict
 
     def _create_graphrag_config(
@@ -559,7 +509,7 @@ class SearchRunner(BaseGraph):
         collection_name = create_collection_name(
             config_args.get("container_name", "default"), embedding_name
         )
-        embedding_store = VectorStoreFactory.get_vector_store(
+        embedding_store = VectorStoreFactory().create_vector_store(
             vector_store_type=vector_store_type,
             kwargs={**config_args, "collection_name": collection_name},
         )

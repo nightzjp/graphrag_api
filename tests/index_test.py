@@ -5,7 +5,7 @@ import argparse
 
 from graphrag_api.index import GraphRagIndexer
 
-from graphrag.logging.types import ReporterType
+from graphrag.logger.factory import LoggerType
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -31,7 +31,7 @@ if __name__ == "__main__":
         help="The root directory to use for input data and output data, if no configuration is defined. Default: current directory",
         # Only required if config is not defined
         required=False,
-        default=".",
+        default="./ragtest",
         type=str,
     )
     parser.add_argument(
@@ -44,8 +44,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--reporter",
         help="The progress reporter to use. Valid values are 'rich', 'print', or 'none'",
-        default=ReporterType.RICH,
-        type=ReporterType,
+        default=LoggerType.RICH,
+        type=LoggerType,
     )
     parser.add_argument(
         "--dryrun",
@@ -93,7 +93,7 @@ if __name__ == "__main__":
         update_index_id=args.update_index,
         memprofile=args.memprofile or False,
         nocache=args.nocache or False,
-        reporter=args.reporter,
+        logger=args.reporter,
         config_filepath=args.config,
         dryrun=args.dryrun or False,
         init=True,

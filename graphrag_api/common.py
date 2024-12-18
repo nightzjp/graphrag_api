@@ -3,14 +3,15 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from graphrag.config import create_graphrag_config
-from graphrag.logging.print_progress import ProgressReporter
+from graphrag.config.create_graphrag_config import create_graphrag_config
+
+from graphrag.logger.base import ProgressLogger
 
 
 class BaseGraph:
     @staticmethod
     def _read_config_parameters(
-        root: str, config: Optional[str], reporter: ProgressReporter
+        root: str, config: Optional[str], reporter: ProgressLogger
     ):
         _root = Path(root)
         settings_yaml = (
@@ -44,15 +45,16 @@ class BaseGraph:
         return result
 
     @staticmethod
-    def redact(input: dict) -> str:
-        """Sanitize the config json."""
+    def redact(config: dict) -> str:
+        """Sanitize secrets in a config object."""
 
-        def redact_dict(input: dict) -> dict:
-            if not isinstance(input, dict):
-                return input
+        # Redact any sensitive configuration
+        def redact_dict(config: dict) -> dict:
+            if not isinstance(config, dict):
+                return config
 
             result = {}
-            for key, value in input.items():
+            for key, value in config.items():
                 if key in {
                     "api_key",
                     "connection_string",
@@ -69,5 +71,5 @@ class BaseGraph:
                     result[key] = value
             return result
 
-        redacted_dict = redact_dict(input)
+        redacted_dict = redact_dict(config)
         return json.dumps(redacted_dict, indent=4)

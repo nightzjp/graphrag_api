@@ -18,7 +18,8 @@ from graphrag.config.models.graph_rag_config import GraphRagConfig
 from graphrag.config.resolve_path import resolve_paths
 from graphrag.logging.print_progress import PrintProgressReporter
 from graphrag.index.create_pipeline_config import create_pipeline_config
-from graphrag.utils.storage import _create_storage, _load_table_from_storage
+from graphrag.storage.factory import create_storage
+from graphrag.utils.storage import _load_table_from_storage
 from graphrag.utils.embeddings import create_collection_name
 from graphrag.index.config.embeddings import (
     entity_description_embedding,
@@ -33,7 +34,7 @@ from graphrag.vector_stores.base import BaseVectorStore
 from graphrag.vector_stores.factory import VectorStoreFactory, VectorStoreType
 from graphrag.vector_stores.lancedb import LanceDBVectorStore
 
-from graphrag.query.factories import (
+from graphrag.query.factory import (
     get_global_search_engine,
     get_local_search_engine,
     get_drift_search_engine,
@@ -434,7 +435,7 @@ class SearchRunner(BaseGraph):
         """Read parquet files to a dataframe dict."""
         dataframe_dict = {}
         pipeline_config = create_pipeline_config(config)
-        storage_obj = _create_storage(root_dir=root_dir, config=pipeline_config.storage)
+        storage_obj = create_storage(config=pipeline_config.storage)
         for parquet_file in parquet_list:
             df_key = parquet_file.split(".")[0]
             df_value = asyncio.run(

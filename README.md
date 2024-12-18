@@ -45,7 +45,7 @@ pip install -r requirements.txt
 1. 命令行初始化
 
 ```bash
-python -m graphrag.index --init --root ./rag  # graphrag初始化
+python -m graphrag index --init --root ./rag  # graphrag初始化
 python index_test.py --init --root rag  # graphrag_api初始化
 ```
 
@@ -65,7 +65,7 @@ indexer.run()
 1. 命令行初始化(会生成rag目录)
 
 ```bash
-python -m graphrag.index --root rag  # graphrag初始化
+python -m graphrag index --root rag  # graphrag初始化
 python index_test.py --root rag  # graphrag_api初始化
 ```
 
@@ -131,7 +131,7 @@ question,answer
 1. 命令行初始化
 
 ```bash
-python -m graphrag.query \
+python -m graphrag query \
 --root ./ragtest \
 --method global(local) \
 "What are the top themes in this story?"  # graphrag初始化

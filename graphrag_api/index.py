@@ -20,7 +20,7 @@ from graphrag.config.load_config import load_config
 from graphrag.config.logging import enable_logging_with_config
 from graphrag.config.resolve_path import resolve_paths
 from graphrag.config.enums import CacheType
-from graphrag.logging.factories import create_progress_reporter
+from graphrag.logging.factory import create_progress_reporter
 from graphrag.logging.types import ReporterType
 from graphrag.prompts.index.entity_extraction import GRAPH_EXTRACTION_PROMPT
 from graphrag.prompts.index.summarize_descriptions import SUMMARIZE_PROMPT
@@ -39,7 +39,6 @@ from graphrag.prompts.query.question_gen_system_prompt import QUESTION_SYSTEM_PR
 
 from graphrag.index.validate_config import validate_config_names
 from graphrag.logging.base import ProgressReporter
-from graphrag.index.emit.types import TableEmitterType
 
 from graphrag_api.common import BaseGraph
 
@@ -60,7 +59,6 @@ class GraphRagIndexer(BaseGraph):
         nocache: bool = False,
         reporter: ReporterType = ReporterType.RICH,
         config_filepath: Optional[str] = "",
-        emit=TableEmitterType.Parquet.value,
         dryrun: bool = False,
         init: bool = False,
         skip_validations: bool = False,
@@ -74,7 +72,6 @@ class GraphRagIndexer(BaseGraph):
         self.nocache = nocache
         self.reporter = reporter
         self.config_filepath = config_filepath
-        self.emit = [TableEmitterType(value.strip()) for value in emit.split(",")]
         self.dryrun = dryrun
         self.init = init
         self.skip_validations = skip_validations
@@ -185,7 +182,6 @@ class GraphRagIndexer(BaseGraph):
                 is_resume_run=bool(self.resume),
                 memory_profile=self.memprofile,
                 progress_reporter=progress_reporter,
-                emit=self.emit,
             )
         )
 

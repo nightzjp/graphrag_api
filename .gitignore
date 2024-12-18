@@ -133,3 +133,6 @@ build/
 
 rag/
 lancedb/
+.output
+.idea
+ragtest

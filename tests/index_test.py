@@ -6,7 +6,6 @@ import argparse
 from graphrag_api.index import GraphRagIndexer
 
 from graphrag.logging.types import ReporterType
-from graphrag.index.emit.types import TableEmitterType
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -40,22 +39,13 @@ if __name__ == "__main__":
         help="Resume a given data run leveraging Parquet output files.",
         # Only required if config is not defined
         required=False,
-        default="",
-        type=str,
+        default=None,
     )
     parser.add_argument(
         "--reporter",
         help="The progress reporter to use. Valid values are 'rich', 'print', or 'none'",
         default=ReporterType.RICH,
         type=ReporterType,
-        choices=list(ReporterType),
-    )
-    parser.add_argument(
-        "--emit",
-        help="The data formats to emit, comma-separated. Default: parquet",
-        default=TableEmitterType.Parquet.value,
-        type=str,
-        choices=list(TableEmitterType),
     )
     parser.add_argument(
         "--dryrun",
@@ -105,11 +95,10 @@ if __name__ == "__main__":
         nocache=args.nocache or False,
         reporter=args.reporter,
         config_filepath=args.config,
-        emit=[TableEmitterType(value) for value in args.emit.split(",")],
         dryrun=args.dryrun or False,
-        init=args.init or False,
+        init=True,
         skip_validations=args.skip_validations or False,
-        output_dir=args.ourput,
+        output_dir=args.output,
     )
 
     indexer.run()

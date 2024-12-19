@@ -67,8 +67,8 @@ class SearchRunner(BaseGraph):
         self.response_type = response_type
         self.config = None
         self.__local_agent = self.__get__local_agent()
-        # self.__global_agent = self.__get__global_agent()
-        # self.__drift_agent = self.__get__drift_agent()
+        self.__global_agent = self.__get__global_agent()
+        self.__drift_agent = self.__get__drift_agent()
 
     @staticmethod
     @validate_call(config={"arbitrary_types_allowed": True})
@@ -304,9 +304,9 @@ class SearchRunner(BaseGraph):
         final_entities: pd.DataFrame = dataframe_dict["create_final_entities"]
         final_covariates: pd.DataFrame | None = dataframe_dict["create_final_covariates"]
 
-        config = self._patch_vector_store(
-            config, final_nodes, final_entities, self.community_level
-        )
+        # config = self._patch_vector_store(
+        #     config, final_nodes, final_entities, self.community_level
+        # )
 
         # vector_store_type = config.embeddings.vector_store.get("type")
         vector_store_args = config.embeddings.vector_store

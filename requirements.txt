@@ -1,1 +1,1 @@
-graphrag==1.0.0
+graphrag==1.0.1
